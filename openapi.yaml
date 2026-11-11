@@ -1,0 +1,792 @@
+openapi: 3.1.0
+info:
+  title: Neuvia API
+  version: 1.0.0
+  summary: Narrative intelligence for news coverage.
+  description: |
+    Neuvia tracks how news coverage portrays people, companies and places, storyline by storyline and day by day.
+
+    **Storylines.** Each article is broken into entity-concept pairs, such as `federal reserve` + `rate hike`, and
+    each pair gets a score from -1 to 1 for how the article portrays the entity in that storyline. Scores are
+    aggregated by day and by channel: `google-news`, `financial` (the financial press) and `local` (US local outlets).
+
+    **A balanced reference.** For the same storylines, Balanced Discoverable Media Sentiment (BDMS) is built from
+    discoverable news coverage. Scores are averaged within each publisher, then across publishers within each outlet
+    type, then equally across outlet types. Each reference comes with a 95% confidence interval.
+
+    **The gap.** Channel Narrative Divergence (CND) is a channel's score minus BDMS.
+
+    Score fields keep their API names: `sentiment`, `avgSentiment`, `financialSentiment` and `marketSentiment` all
+    run from -1 (most negative) to 1 (most positive).
+
+    Get a free key (1,000 calls a month, 7 days of history, no card):
+    https://neuvianews.com/dashboard?plan=free&ref=openapi
+
+    How the reference is built: https://neuvianews.com/blog/narrative-intelligence?ref=openapi
+  contact:
+    name: Neuvia
+    url: https://neuvianews.com/?ref=openapi
+    email: api@delvedx.com
+externalDocs:
+  description: API reference with examples
+  url: https://neuvianews.com/docs?ref=openapi
+servers:
+  - url: https://neuvianews.com/api
+security:
+  - bearerAuth: []
+  - apiKeyQuery: []
+tags:
+  - name: Discovery
+    description: Find entities and the storylines they appear in.
+  - name: Storylines
+    description: Daily series for a storyline and the articles behind it.
+  - name: Channels
+    description: Views of the financial press and US local news.
+  - name: Analysis
+    description: Score article text you send.
+
+paths:
+  /v1/search:
+    get:
+      operationId: searchEntities
+      tags: [Discovery]
+      summary: Find an entity's canonical name
+      description: |
+        Entity names are normalized to lowercase full names, such as `donald trump` or `federal reserve`. Use this to
+        find the exact name to pass to other endpoints. Matches anywhere in the name, among entities covered in the
+        last 30 days, most-covered first.
+
+        Plan: Free and above.
+      x-neuvia-plan: free
+      parameters:
+        - name: q
+          in: query
+          required: true
+          description: Part of the entity name, at least 2 characters.
+          schema: { type: string, minLength: 2 }
+          example: federal
+        - name: limit
+          in: query
+          description: Maximum number of results.
+          schema: { type: integer, minimum: 1, maximum: 20, default: 10 }
+      responses:
+        '200':
+          description: Matching entities, most-covered first.
+          headers:
+            X-RateLimit-Limit: { $ref: '#/components/headers/X-RateLimit-Limit' }
+            X-RateLimit-Used: { $ref: '#/components/headers/X-RateLimit-Used' }
+            X-Plan: { $ref: '#/components/headers/X-Plan' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SearchResponse' }
+              example:
+                results:
+                  - { entity: federal reserve, entityType: org, count: 383 }
+                  - { entity: federal aviation administration, entityType: org, count: 77 }
+                  - { entity: federal trade commission, entityType: org, count: 59 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /v1/trending:
+    get:
+      operationId: listTrendingEntities
+      tags: [Discovery]
+      summary: Entities with the most coverage this week
+      description: |
+        Entities ranked by recency-weighted coverage over the last 7 days. A mention counts 3 times in the last 24
+        hours, twice at 24 to 48 hours and once after that. `avgSentiment` is the average score of those mentions.
+
+        Plan: Free and above.
+      x-neuvia-plan: free
+      parameters:
+        - name: category
+          in: query
+          description: Only entities covered in this category.
+          schema: { $ref: '#/components/schemas/Category' }
+        - name: limit
+          in: query
+          description: Maximum number of results.
+          schema: { type: integer, minimum: 1, maximum: 50, default: 20 }
+      responses:
+        '200':
+          description: Entities, highest score first.
+          headers:
+            X-RateLimit-Limit: { $ref: '#/components/headers/X-RateLimit-Limit' }
+            X-RateLimit-Used: { $ref: '#/components/headers/X-RateLimit-Used' }
+            X-Plan: { $ref: '#/components/headers/X-Plan' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TrendingResponse' }
+              example:
+                results:
+                  - { entity: united states, score: 188, avgSentiment: 0, category: economy }
+                  - { entity: donald trump, score: 148, avgSentiment: -0.288, category: economy }
+                  - { entity: nvidia, score: 143, avgSentiment: -0.501, category: economy }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /v1/entity/{entity}/coverage:
+    get:
+      operationId: getEntityCoverage
+      tags: [Discovery]
+      summary: Every storyline for an entity
+      description: |
+        The concepts an entity appears with over the last `days` days, most-mentioned first (up to 50). Each comes
+        with its mention count, average score and the latest BDMS reference with its 95% confidence interval. `bdms`
+        is null for storylines without a reference yet.
+
+        Plan: Free and above.
+      x-neuvia-plan: free
+      parameters:
+        - name: entity
+          in: path
+          required: true
+          description: Canonical entity name, from `/v1/search`.
+          schema: { type: string }
+          example: federal reserve
+        - name: days
+          in: query
+          description: Lookback window in days.
+          schema: { type: integer, minimum: 1, maximum: 90, default: 30 }
+      responses:
+        '200':
+          description: The entity's storylines, most-mentioned first.
+          headers:
+            X-RateLimit-Limit: { $ref: '#/components/headers/X-RateLimit-Limit' }
+            X-RateLimit-Used: { $ref: '#/components/headers/X-RateLimit-Used' }
+            X-Plan: { $ref: '#/components/headers/X-Plan' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CoverageResponse' }
+              example:
+                entity: federal reserve
+                days: 7
+                coverage:
+                  - { concept: rate hike, mentions: 25, avgSentiment: -0.084, category: economy, bdms: 0.188, bdmsCiLow: 0.125, bdmsCiHigh: 0.25 }
+                  - { concept: interest rate hike, mentions: 19, avgSentiment: -0.105, category: economy, bdms: 0.188, bdmsCiLow: 0.156, bdmsCiHigh: 0.219 }
+                  - { concept: rate cut pause, mentions: 4, avgSentiment: -0.125, category: stocks, bdms: null, bdmsCiLow: null, bdmsCiHigh: null }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /v1/narratives:
+    get:
+      operationId: getStorylineSeries
+      tags: [Storylines]
+      summary: Daily series for one storyline
+      description: |
+        One row per day with coverage (UTC dates): mentions, the channel's average score, the BDMS reference in
+        effect that day (the latest computed before it) with its 95% confidence interval and sample size, and CND
+        (score minus BDMS).
+
+        History follows your plan: 7 days on Free, 90 on Starter, and everything since March 2026 on Professional
+        and Enterprise. Earlier `from` dates are moved to the start of your window.
+
+        Plan: Free and above.
+      x-neuvia-plan: free
+      parameters:
+        - name: entity
+          in: query
+          required: true
+          description: Canonical entity name, from `/v1/search`.
+          schema: { type: string }
+          example: federal reserve
+        - name: concept
+          in: query
+          required: true
+          description: The storyline's concept, from `/v1/entity/{entity}/coverage`.
+          schema: { type: string }
+          example: rate hike
+        - $ref: '#/components/parameters/Channel'
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+        - $ref: '#/components/parameters/Days'
+      responses:
+        '200':
+          description: The daily series, oldest first.
+          headers:
+            X-RateLimit-Limit: { $ref: '#/components/headers/X-RateLimit-Limit' }
+            X-RateLimit-Used: { $ref: '#/components/headers/X-RateLimit-Used' }
+            X-Plan: { $ref: '#/components/headers/X-Plan' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NarrativeResponse' }
+              example:
+                entity: federal reserve
+                concept: rate hike
+                channel: all
+                series:
+                  - { date: '2026-11-09', mentions: 2, sentiment: -0.5, bdms: 0.198, bdmsCiLow: 0.104, bdmsCiHigh: 0.313, bdmsSampleSize: 14, bdmsComputedAt: '2026-11-07', cnd: -0.698 }
+                  - { date: '2026-11-10', mentions: 6, sentiment: 0, bdms: 0.26, bdmsCiLow: 0.198, bdmsCiHigh: 0.323, bdmsSampleSize: 15, bdmsComputedAt: '2026-11-09', cnd: -0.26 }
+                  - { date: '2026-11-11', mentions: 7, sentiment: -0.3, bdms: 0.26, bdmsCiLow: 0.198, bdmsCiHigh: 0.323, bdmsSampleSize: 15, bdmsComputedAt: '2026-11-09', cnd: -0.56 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /v1/articles:
+    get:
+      operationId: listArticles
+      tags: [Storylines]
+      summary: The articles behind a storyline, an entity or a keyword
+      description: |
+        Newest first. Choose articles by storyline (`entity` and `concept` together), by `entity` or `concept` alone
+        (all its storylines), or by keyword: `q` matches entity and concept names containing a word that starts with
+        it. Separate keywords with commas to match any of them. With `entity` or `concept`, `q` narrows the other.
+
+        Each item is one storyline in one article, with the BDMS reference in effect on the article's date. An
+        article that covers several matching storylines appears once for each.
+
+        History follows your plan, as for `/v1/narratives`. Free keys get the 5 newest items, and `q` on its own
+        needs Starter or above. Paid plans get up to 100 items per request: pass each response's `next` back as
+        `cursor` until `next` is null. The first search for a new keyword can take a few seconds.
+
+        Plan: Free and above.
+      x-neuvia-plan: free
+      parameters:
+        - name: entity
+          in: query
+          description: Canonical entity name. With `concept`, one storyline; alone, all of the entity's storylines.
+          schema: { type: string }
+          example: federal reserve
+        - name: concept
+          in: query
+          description: Concept. With `entity`, one storyline; alone, every entity it appears with.
+          schema: { type: string }
+        - name: q
+          in: query
+          description: |
+            Keywords matched against entity and concept names: up to 10, comma-separated, at least 3 characters
+            each. Pass at least one of `entity`, `concept` or `q`, and not all three.
+          schema: { type: string }
+        - $ref: '#/components/parameters/Channel'
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+        - $ref: '#/components/parameters/Days'
+        - name: limit
+          in: query
+          description: Items per request, up to 100 (5 on Free).
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+        - name: cursor
+          in: query
+          description: The `next` value from the previous response, to fetch the following page. Starter and above.
+          schema: { type: string, pattern: '^\d+_[0-9a-f]{24}$' }
+      responses:
+        '200':
+          description: One page of items, newest first.
+          headers:
+            X-RateLimit-Limit: { $ref: '#/components/headers/X-RateLimit-Limit' }
+            X-RateLimit-Used: { $ref: '#/components/headers/X-RateLimit-Used' }
+            X-Plan: { $ref: '#/components/headers/X-Plan' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ArticlesResponse' }
+              example:
+                entity: federal reserve
+                concept: null
+                q: null
+                channel: local
+                articles:
+                  - url: https://www.adn.com/business-economy/2026/11/11/as-higher-prices-seep-into-broader-economy-fed-officials-consider-faster-hikes/
+                    title: As higher prices seep into broader economy, Fed officials consider faster hikes
+                    source: Anchorage Daily News
+                    publishedAt: '2026-11-11T16:59:47.000Z'
+                    channel: local
+                    state: AK
+                    entity: federal reserve
+                    concept: interest rate hike
+                    sentiment: -0.5
+                    bdms: 0.188
+                    bdmsCiLow: 0.156
+                    bdmsCiHigh: 0.219
+                    bdmsComputedAt: '2026-11-10'
+                next: 1794416387000_6af4a660d363e2d31ec0715a
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /v1/stocks/sentiment:
+    get:
+      operationId: getStockCoverage
+      tags: [Channels]
+      summary: Financial press scores for the most-covered stocks
+      description: |
+        The stocks with the most financial press coverage over the last 7 days, with each stock's average score and
+        article count, and the average across all financial press coverage for market-wide context.
+
+        Starter returns the top 5. Professional and above return up to 20 and add daily score and closing-price
+        trends.
+
+        Plan: Starter and above.
+      x-neuvia-plan: starter
+      parameters:
+        - name: limit
+          in: query
+          description: Maximum stocks. Up to 5 on Starter (default 5) and 20 on Professional (default 10).
+          schema: { type: integer, minimum: 1, maximum: 20 }
+      responses:
+        '200':
+          description: The most-covered stocks, most articles first. Trends are trimmed in this example.
+          headers:
+            X-RateLimit-Limit: { $ref: '#/components/headers/X-RateLimit-Limit' }
+            X-RateLimit-Used: { $ref: '#/components/headers/X-RateLimit-Used' }
+            X-Plan: { $ref: '#/components/headers/X-Plan' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StocksResponse' }
+              example:
+                marketSentiment: 0.287
+                stocks:
+                  - entity: nvidia
+                    financialSentiment: -0.108
+                    articleCount: 331
+                    priceTrend:
+                      - { date: '2026-11-09', close: 178.67 }
+                      - { date: '2026-11-10', close: 168.89 }
+                      - { date: '2026-11-11', close: 174.9 }
+                    sentimentTrend:
+                      - { date: '2026-11-09', avgSentiment: -0.323 }
+                      - { date: '2026-11-10', avgSentiment: -0.211 }
+                      - { date: '2026-11-11', avgSentiment: 0.024 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /v1/local/{state}:
+    get:
+      operationId: getLocalNews
+      tags: [Channels]
+      summary: Latest local coverage in a US state
+      description: |
+        The 10 most recent articles from the state's local outlets in the last 24 hours, each with its main
+        storyline and score. All 50 states are supported.
+
+        Plan: Professional and above.
+      x-neuvia-plan: professional
+      parameters:
+        - name: state
+          in: path
+          required: true
+          description: Two-letter state code or full state name.
+          schema: { type: string }
+          example: WA
+      responses:
+        '200':
+          description: Up to 10 articles, newest first. Trimmed to one in this example.
+          headers:
+            X-RateLimit-Limit: { $ref: '#/components/headers/X-RateLimit-Limit' }
+            X-RateLimit-Used: { $ref: '#/components/headers/X-RateLimit-Used' }
+            X-Plan: { $ref: '#/components/headers/X-Plan' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LocalResponse' }
+              example:
+                state: WA
+                articles:
+                  - url: https://www.seattletimes.com/business/united-blocks-ai-agents-from-booking-flights-ahead-of-holidays/?utm_source=RSS&utm_medium=Referral&utm_campaign=RSS_all
+                    title: United blocks AI agents from booking flights ahead of holidays
+                    source: Seattle Times
+                    publishedAt: '2026-11-11T19:25:26.000Z'
+                    entity: united airlines
+                    concept: blocking ai booking
+                    sentiment: -0.5
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /v1/analyze:
+    post:
+      operationId: analyzeArticle
+      tags: [Analysis]
+      summary: Score article text you send
+      description: |
+        Runs the same extraction used for ingested articles on your text (the first 12,000 characters) and returns
+        each storyline with the article's score and the current BDMS reference for that storyline, where one exists.
+        Nothing is stored.
+
+        Plan: Professional and above.
+      x-neuvia-plan: professional
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AnalyzeRequest' }
+            example:
+              title: Fed officials weigh a faster pace of rate hikes
+              text: >-
+                Federal Reserve officials are weighing whether to raise interest rates faster after two inflation
+                measures moved the wrong way in October. Several policymakers said a larger increase at the December
+                meeting is on the table, while others argued the economy needs time to absorb the hikes already made.
+                Fed Chair Jerome Powell said the committee will act as needed to bring inflation back to its 2% goal.
+      responses:
+        '200':
+          description: The article's storylines.
+          headers:
+            X-RateLimit-Limit: { $ref: '#/components/headers/X-RateLimit-Limit' }
+            X-RateLimit-Used: { $ref: '#/components/headers/X-RateLimit-Used' }
+            X-Plan: { $ref: '#/components/headers/X-Plan' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AnalyzeResponse' }
+              example:
+                pairs:
+                  - { entity: federal reserve, concept: rate hike discussion, sentiment: 0.5, bdms: null, bdmsCiLow: null, bdmsCiHigh: null, bdmsSampleSize: null }
+                  - { entity: federal reserve, concept: inflation measures, sentiment: -0.5, bdms: null, bdmsCiLow: null, bdmsCiHigh: null, bdmsSampleSize: null }
+                  - { entity: jerome powell, concept: inflation target, sentiment: 0.5, bdms: null, bdmsCiLow: null, bdmsCiHigh: null, bdmsSampleSize: null }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '503':
+          description: Analysis is temporarily unavailable. Retry shortly.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: Analysis is temporarily unavailable. Please retry shortly. }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: 'Your API key as a bearer token, `Authorization: Bearer nv_...`. Recommended.'
+    apiKeyQuery:
+      type: apiKey
+      in: query
+      name: api_key
+      description: Your API key as a query parameter, handy for quick tests in a browser.
+
+  headers:
+    X-RateLimit-Limit:
+      description: Calls included per calendar month (UTC) on your plan, or `unlimited`.
+      schema: { type: string }
+      example: '1000'
+    X-RateLimit-Used:
+      description: Calls made this month, including this one.
+      schema: { type: integer }
+      example: 42
+    X-Plan:
+      description: The plan of the key that made the call.
+      schema: { type: string, enum: [free, starter, professional, enterprise] }
+      example: free
+
+  parameters:
+    Channel:
+      name: channel
+      in: query
+      description: Which channel's coverage to use. `all` combines them.
+      schema: { $ref: '#/components/schemas/Channel' }
+    From:
+      name: from
+      in: query
+      description: |
+        Start date or time (ISO 8601). Defaults to the start of your plan's history window; earlier values are moved
+        to it.
+      schema: { type: string }
+      example: '2026-11-01'
+    To:
+      name: to
+      in: query
+      description: End date or time (ISO 8601), inclusive. A date on its own includes that whole day (UTC). Defaults to now.
+      schema: { type: string }
+      example: '2026-11-11'
+    Days:
+      name: days
+      in: query
+      description: Shortcut for `from`, the last N days. Ignored when `from` is given.
+      schema: { type: integer, minimum: 1 }
+
+  responses:
+    BadRequest:
+      description: A parameter is missing or invalid. `error` says which.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { error: entity and concept are required }
+    Unauthorized:
+      description: |
+        The API key is missing, invalid, inactive or expired. For an expired key the response adds `expiredAt` and
+        `upgradeUrl`.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { error: Invalid or inactive API key }
+    Forbidden:
+      description: Your plan doesn't include this endpoint or option. `upgradeUrl` links to the plans.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error: 'This endpoint requires professional plan or higher. Your plan: free'
+            upgradeUrl: https://neuvianews.com/#pricing
+    TooManyRequests:
+      description: You've used this month's calls. The count resets on the first of each month (UTC).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error: Monthly call limit reached (1,000 calls). Upgrade to increase your limit.
+            upgradeUrl: https://neuvianews.com/#pricing
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string, description: What went wrong. }
+        upgradeUrl: { type: string, format: uri, description: Where to see or change plans. }
+        expiredAt: { type: string, format: date, description: The day the key expired. }
+
+    Score:
+      type: number
+      minimum: -1
+      maximum: 1
+      description: How coverage portrays the entity in the storyline, from -1 (most negative) to 1 (most positive).
+
+    NullableScore:
+      type: [number, 'null']
+      minimum: -1
+      maximum: 1
+
+    Channel:
+      type: string
+      enum: [google-news, financial, local, all]
+      default: all
+      description: |
+        `google-news`: articles surfaced by Google News. `financial`: the financial press. `local`: US local
+        outlets. `all`: every channel combined.
+
+    Category:
+      type: string
+      enum: [politics, economy, stocks, technology, sports, general]
+
+    SearchResponse:
+      type: object
+      required: [results]
+      properties:
+        results:
+          type: array
+          items:
+            type: object
+            required: [entity, count]
+            properties:
+              entity: { type: string, description: Canonical entity name. }
+              entityType:
+                type: [string, 'null']
+                enum: [person, place, org, event, null]
+              count: { type: integer, description: Mentions in the last 30 days. }
+
+    TrendingResponse:
+      type: object
+      required: [results]
+      properties:
+        results:
+          type: array
+          items:
+            type: object
+            required: [entity, score, avgSentiment]
+            properties:
+              entity: { type: string }
+              score: { type: integer, description: Recency-weighted mention count over the last 7 days. }
+              avgSentiment: { $ref: '#/components/schemas/Score' }
+              category:
+                anyOf: [{ $ref: '#/components/schemas/Category' }, { type: 'null' }]
+
+    CoverageResponse:
+      type: object
+      required: [entity, days, coverage]
+      properties:
+        entity: { type: string }
+        days: { type: integer }
+        coverage:
+          type: array
+          items: { $ref: '#/components/schemas/CoverageItem' }
+
+    CoverageItem:
+      type: object
+      required: [concept, mentions, avgSentiment, bdms, bdmsCiLow, bdmsCiHigh]
+      properties:
+        concept: { type: string }
+        mentions: { type: integer }
+        avgSentiment: { $ref: '#/components/schemas/Score' }
+        category:
+          anyOf: [{ $ref: '#/components/schemas/Category' }, { type: 'null' }]
+        bdms:
+          $ref: '#/components/schemas/NullableScore'
+          description: The latest BDMS reference for the storyline, or null if there isn't one yet.
+        bdmsCiLow:
+          $ref: '#/components/schemas/NullableScore'
+          description: Lower bound of the reference's 95% confidence interval.
+        bdmsCiHigh:
+          $ref: '#/components/schemas/NullableScore'
+          description: Upper bound of the reference's 95% confidence interval.
+
+    NarrativeResponse:
+      type: object
+      required: [entity, concept, channel, series]
+      properties:
+        entity: { type: string }
+        concept: { type: string }
+        channel: { $ref: '#/components/schemas/Channel' }
+        series:
+          type: array
+          items: { $ref: '#/components/schemas/NarrativePoint' }
+
+    NarrativePoint:
+      type: object
+      required: [date, mentions, sentiment, bdms, bdmsCiLow, bdmsCiHigh, bdmsSampleSize, bdmsComputedAt, cnd]
+      properties:
+        date: { type: string, format: date, description: The day (UTC). }
+        mentions: { type: integer, description: Articles in the channel covering the storyline that day. }
+        sentiment:
+          $ref: '#/components/schemas/Score'
+          description: The channel's average score for the storyline that day.
+        bdms:
+          $ref: '#/components/schemas/NullableScore'
+          description: The BDMS reference in effect that day, or null if there isn't one yet.
+        bdmsCiLow: { $ref: '#/components/schemas/NullableScore' }
+        bdmsCiHigh: { $ref: '#/components/schemas/NullableScore' }
+        bdmsSampleSize:
+          type: [integer, 'null']
+          description: Articles the reference was built from.
+        bdmsComputedAt:
+          type: [string, 'null']
+          format: date
+          description: When the reference in effect was computed.
+        cnd:
+          type: [number, 'null']
+          minimum: -2
+          maximum: 2
+          description: Channel Narrative Divergence, `sentiment` minus `bdms`.
+
+    ArticlesResponse:
+      type: object
+      required: [entity, concept, q, channel, articles, next]
+      properties:
+        entity: { type: [string, 'null'] }
+        concept: { type: [string, 'null'] }
+        q: { type: [string, 'null'], description: 'The keywords used, comma-separated.' }
+        channel: { $ref: '#/components/schemas/Channel' }
+        articles:
+          type: array
+          items: { $ref: '#/components/schemas/ArticleItem' }
+        next:
+          type: [string, 'null']
+          description: Pass as `cursor` to get the next page. Null on the last page, and always on Free.
+
+    ArticleItem:
+      type: object
+      required: [url, title, source, publishedAt, channel, state, entity, concept, sentiment, bdms, bdmsCiLow, bdmsCiHigh, bdmsComputedAt]
+      properties:
+        url: { type: [string, 'null'], format: uri }
+        title: { type: [string, 'null'] }
+        source: { type: [string, 'null'], description: The publisher. }
+        publishedAt: { type: string, format: date-time }
+        channel:
+          type: string
+          enum: [google-news, financial, local, other]
+          description: The channel the article came from. `other` marks articles from earlier ingestion sources.
+        state:
+          type: [string, 'null']
+          description: Two-letter state code for local outlets, otherwise null.
+        entity: { type: string }
+        concept: { type: string }
+        sentiment:
+          $ref: '#/components/schemas/Score'
+          description: How this article portrays the entity in the storyline.
+        bdms:
+          $ref: '#/components/schemas/NullableScore'
+          description: The BDMS reference in effect on the article's date, or null if there isn't one.
+        bdmsCiLow: { $ref: '#/components/schemas/NullableScore' }
+        bdmsCiHigh: { $ref: '#/components/schemas/NullableScore' }
+        bdmsComputedAt: { type: [string, 'null'], format: date }
+
+    StocksResponse:
+      type: object
+      required: [marketSentiment, stocks]
+      properties:
+        marketSentiment:
+          $ref: '#/components/schemas/NullableScore'
+          description: Average score across all financial press coverage over the last 7 days.
+        stocks:
+          type: array
+          items: { $ref: '#/components/schemas/StockItem' }
+
+    StockItem:
+      type: object
+      required: [entity, financialSentiment, articleCount]
+      properties:
+        entity: { type: string }
+        financialSentiment:
+          $ref: '#/components/schemas/Score'
+          description: Average score of the stock's financial press coverage over the last 7 days.
+        articleCount: { type: integer }
+        priceTrend:
+          type: array
+          description: Daily closing price. Professional and above.
+          items:
+            type: object
+            required: [date, close]
+            properties:
+              date: { type: string, format: date }
+              close: { type: number }
+        sentimentTrend:
+          type: array
+          description: Daily average score in the financial press. Professional and above.
+          items:
+            type: object
+            required: [date, avgSentiment]
+            properties:
+              date: { type: string, format: date }
+              avgSentiment: { $ref: '#/components/schemas/Score' }
+
+    LocalResponse:
+      type: object
+      required: [state, articles]
+      properties:
+        state: { type: string, description: Two-letter state code. }
+        articles:
+          type: array
+          items:
+            type: object
+            required: [url, title, source, publishedAt, entity, concept, sentiment]
+            properties:
+              url: { type: string, format: uri }
+              title: { type: string }
+              source: { type: string }
+              publishedAt: { type: string, format: date-time }
+              entity: { type: [string, 'null'], description: The article's main entity. }
+              concept: { type: [string, 'null'] }
+              sentiment: { $ref: '#/components/schemas/NullableScore' }
+
+    AnalyzeRequest:
+      type: object
+      required: [title, text]
+      properties:
+        url: { type: string, format: uri, description: "The article's URL, for your reference. It isn't fetched." }
+        title: { type: string }
+        text: { type: string, description: 'The article body as plain text. Only the first 12,000 characters are used.' }
+
+    AnalyzeResponse:
+      type: object
+      required: [pairs]
+      properties:
+        pairs:
+          type: array
+          items:
+            type: object
+            required: [entity, concept, sentiment, bdms, bdmsCiLow, bdmsCiHigh, bdmsSampleSize]
+            properties:
+              entity: { type: string }
+              concept: { type: string }
+              sentiment:
+                $ref: '#/components/schemas/Score'
+                description: How your text portrays the entity in the storyline.
+              bdms:
+                $ref: '#/components/schemas/NullableScore'
+                description: The current BDMS reference for the storyline, or null if there isn't one.
+              bdmsCiLow: { $ref: '#/components/schemas/NullableScore' }
+              bdmsCiHigh: { $ref: '#/components/schemas/NullableScore' }
+              bdmsSampleSize: { type: [integer, 'null'] }
